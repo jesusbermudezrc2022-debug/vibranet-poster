@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Póster interactivo</title>
+  <style>
+    html,body { height:100%; margin:0; font-family:system-ui,Arial; background:#111; color:#fff; }
+    .viewer {
+      width:100%; height:100vh; display:flex; align-items:center; justify-content:center;
+      overflow:hidden; position:relative;
+    }
+    .stage {
+      touch-action: none; /* necesario para pan/zoom en móviles */
+      max-width:100%; max-height:100%;
+      background: #222; border-radius:6px; box-shadow:0 6px 30px rgba(0,0,0,.6);
+    }
+    /* Barra de controles simple */
+    .controls {
+      position: absolute; top:12px; right:12px; display:flex; gap:8px;
+      background: rgba(0,0,0,0.4); padding:8px; border-radius:6px;
+    }
+    .controls button { background:#fff1; color:#fff; border:0; padding:6px 10px; border-radius:4px; cursor:pointer; }
+  </style>
+</head>
+<body>
+  <div class="viewer">
+    <div id="stage" class="stage">
+      <!-- Usa <img> o <svg> según prefieras; aquí un ejemplo con imagen -->
+      <img id="poster" src="images/poster.jpg" alt="Póster interactivo" style="display:block; max-width:100%; max-height:100%;" />
+    </div>
+
+    <div class="controls" aria-hidden="false">
+      <button id="zoomIn">+</button>
+      <button id="zoomOut">−</button>
+      <button id="reset">Reset</button>
+      <a id="download" href="images/poster.jpg" download style="padding:6px 10px; background:#fff1; color:#fff; border-radius:4px; text-decoration:none;">Descargar</a>
+    </div>
+  </div>
+
+  <!-- Librería panzoom (pequeña y cliente-side) -->
+  <script src="https://unpkg.com/@panzoom/panzoom/dist/panzoom.min.js"></script>
+  <script>
+    // Inicializa panzoom sobre el contenedor (soporta imagen o SVG)
+    const stage = document.getElementById('stage');
+    const poster = document.getElementById('poster');
+
+    // Hacemos que el contenido sea el elemento en el que se aplica la transform
+    // Si usas SVG, aplica panzoom al <svg> directamente.
+    const panzoom = Panzoom(stage, {
+      contain: 'outside', // evita que el contenido se "pierda" fuera del área visible
+      maxScale: 5,
+      minScale: 0.5,
+    });
+    // Habilitar rueda para zoom
+    stage.parentElement.addEventListener('wheel', panzoom.zoomWithWheel);
+
+    // Controles
+    document.getElementById('zoomIn').addEventListener('click', () => panzoom.zoomIn());
+    document.getElementById('zoomOut').addEventListener('click', () => panzoom.zoomOut());
+    document.getElementById('reset').addEventListener('click', () => panzoom.reset());
+  </script>
+</body>
+</html>
