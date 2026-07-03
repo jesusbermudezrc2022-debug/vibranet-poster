@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Póster interactivo</title>
+  <title>Póster interactivo (sin dependencias externas)</title>
   <style>
     html,body { height:100%; margin:0; font-family:system-ui,Arial; background:#111; color:#fff; }
     .viewer {
@@ -12,53 +12,269 @@
     }
     .stage {
       touch-action: none; /* necesario para pan/zoom en móviles */
-      max-width:100%; max-height:100%;
+      width:calc(100% - 40px); height:calc(100vh - 40px);
       background: #222; border-radius:6px; box-shadow:0 6px 30px rgba(0,0,0,.6);
+      overflow:hidden; display:flex; align-items:center; justify-content:center; position:relative;
     }
+
+    /* Imagen/póster: la transform se aplica aquí */
+    #poster {
+      display:block; max-width:none; max-height:none; width:auto; height:auto;
+      user-select: none; -webkit-user-drag: none; touch-action: none;
+      transform-origin: 0 0; /* trabajamos con translate(x,y) + scale(s) */
+      will-change: transform;
+    }
+
     /* Barra de controles simple */
     .controls {
       position: absolute; top:12px; right:12px; display:flex; gap:8px;
-      background: rgba(0,0,0,0.4); padding:8px; border-radius:6px;
+      background: rgba(0,0,0,0.45); padding:8px; border-radius:6px;
     }
-    .controls button { background:#fff1; color:#fff; border:0; padding:6px 10px; border-radius:4px; cursor:pointer; }
+    .controls button, .controls a { background:#fff1; color:#fff; border:0; padding:6px 10px; border-radius:4px; cursor:pointer; text-decoration:none; }
+
+    /* Indicador de instrucciones (pequeño) */
+    .hint { position:absolute; left:12px; top:12px; background: rgba(0,0,0,0.35); padding:8px 10px; border-radius:6px; font-size:13px; }
+
+    @media (max-width:600px){ .controls { gap:6px; padding:6px; } .controls button{ padding:6px; } }
   </style>
 </head>
 <body>
   <div class="viewer">
-    <div id="stage" class="stage">
+    <div id="stage" class="stage" aria-label="Visor del póster">
       <!-- Usa <img> o <svg> según prefieras; aquí un ejemplo con imagen -->
-      <img id="poster" src="images/poster.jpg" alt="Póster interactivo" style="display:block; max-width:100%; max-height:100%;" />
+      <!-- Asegúrate de subir images/poster.jpg al repositorio o cambiar la ruta -->
+      <img id="poster" src="images/poster.jpg" alt="Póster interactivo" />
     </div>
 
-    <div class="controls" aria-hidden="false">
-      <button id="zoomIn">+</button>
-      <button id="zoomOut">−</button>
-      <button id="reset">Reset</button>
-      <a id="download" href="images/poster.jpg" download style="padding:6px 10px; background:#fff1; color:#fff; border-radius:4px; text-decoration:none;">Descargar</a>
+    <div class="controls" aria-hidden="false" role="toolbar" aria-label="Controles de zoom y desplazamiento">
+      <button id="zoomIn" title="Acercar">+</button>
+      <button id="zoomOut" title="Alejar">−</button>
+      <button id="reset" title="Restablecer vista">Reset</button>
+      <a id="download" href="images/poster.jpg" download title="Descargar póster">Descargar</a>
     </div>
+
+    <div class="hint">Arrastra para mover, rueda para acercar/alejar, gesto de pellizco en móvil</div>
   </div>
 
-  <!-- Librería panzoom (pequeña y cliente-side) -->
-  <script src="https://unpkg.com/@panzoom/panzoom/dist/panzoom.min.js"></script>
   <script>
-    // Inicializa panzoom sobre el contenedor (soporta imagen o SVG)
-    const stage = document.getElementById('stage');
-    const poster = document.getElementById('poster');
+    // Pan & Zoom simple (sin librerías externas)
+    // Estrategia: mantenemos dos variables: scale y pan {x,y}.
+    // Aplicamos CSS transform: translate(xpx, ypx) scale(s)
+    (function(){
+      const stage = document.getElementById('stage');
+      const poster = document.getElementById('poster');
 
-    // Hacemos que el contenido sea el elemento en el que se aplica la transform
-    // Si usas SVG, aplica panzoom al <svg> directamente.
-    const panzoom = Panzoom(stage, {
-      contain: 'outside', // evita que el contenido se "pierda" fuera del área visible
-      maxScale: 5,
-      minScale: 0.5,
-    });
-    // Habilitar rueda para zoom
-    stage.parentElement.addEventListener('wheel', panzoom.zoomWithWheel);
+      // Estado
+      let scale = 1;
+      let minScale = 0.5;
+      let maxScale = 5;
+      let panX = 0; // en píxeles
+      let panY = 0;
 
-    // Controles
-    document.getElementById('zoomIn').addEventListener('click', () => panzoom.zoomIn());
-    document.getElementById('zoomOut').addEventListener('click', () => panzoom.zoomOut());
-    document.getElementById('reset').addEventListener('click', () => panzoom.reset());
+      // Pointer (para drag)
+      let isPanning = false;
+      let startX = 0, startY = 0; // posición del pointer al comenzar drag (en viewport)
+      let startPanX = 0, startPanY = 0;
+
+      // Para soporte de pinch (gesto multi-touch)
+      const pointers = new Map(); // id -> {x,y}
+      let lastDistance = null;
+
+      // Ajustar tamaño inicial del póster para que quepa en el contenedor
+      function fitToStage(){
+        // Esperar a que la imagen se cargue
+        if(!poster.complete || poster.naturalWidth === 0){
+          return;
+        }
+        const sRect = stage.getBoundingClientRect();
+        const iw = poster.naturalWidth, ih = poster.naturalHeight;
+        const scaleX = (sRect.width-20) / iw; // dejar pequeño margen
+        const scaleY = (sRect.height-20) / ih;
+        const initial = Math.min(scaleX, scaleY, 1);
+        scale = initial;
+        panX = (sRect.width - iw*scale)/2;
+        panY = (sRect.height - ih*scale)/2;
+        applyTransform();
+      }
+
+      // Aplicar transform CSS al póster
+      function applyTransform(){
+        poster.style.transform = `translate(${panX}px, ${panY}px) scale(${scale})`;
+      }
+
+      // Limitar pan para que el póster no se pierda completamente (simple)
+      function clampPan(){
+        const sRect = stage.getBoundingClientRect();
+        const iw = poster.naturalWidth, ih = poster.naturalHeight;
+        const contentW = iw * scale;
+        const contentH = ih * scale;
+        // Permitir cierta laxitud; si content más chico que contenedor, centrar
+        if(contentW <= sRect.width){
+          panX = (sRect.width - contentW)/2;
+        } else {
+          const minX = sRect.width - contentW - 200; // margen extra para permitir arrastrar fuera
+          const maxX = 200;
+          panX = Math.min(maxX, Math.max(minX, panX));
+        }
+        if(contentH <= sRect.height){
+          panY = (sRect.height - contentH)/2;
+        } else {
+          const minY = sRect.height - contentH - 200;
+          const maxY = 200;
+          panY = Math.min(maxY, Math.max(minY, panY));
+        }
+      }
+
+      // Zoom manteniendo el punto bajo el cursor
+      function zoomAt(clientX, clientY, newScale){
+        const sRect = stage.getBoundingClientRect();
+        // coordenadas del cursor relativas al elemento (stage)
+        const cx = clientX - sRect.left;
+        const cy = clientY - sRect.top;
+        // transformar a coordenadas del contenido pre-escalado
+        // Queremos que el punto (cx,cy) permanezca fijo en el viewport
+        const prevScale = scale;
+        newScale = Math.max(minScale, Math.min(maxScale, newScale));
+        const scaleFactor = newScale / prevScale;
+
+        // Ajustar pan: pan' = pan - (scaleFactor - 1) * (cursorPos - pan)
+        panX = panX - (scaleFactor - 1) * (cx - panX);
+        panY = panY - (scaleFactor - 1) * (cy - panY);
+
+        scale = newScale;
+        clampPan();
+        applyTransform();
+      }
+
+      // Eventos de rueda para zoom
+      stage.addEventListener('wheel', (ev) => {
+        ev.preventDefault();
+        const delta = -ev.deltaY; // rueda hacia adelante -> positivo
+        // Escala exponencial para mejor control
+        const zoomAmount = delta > 0 ? 1.08 : 1/1.08;
+        zoomAt(ev.clientX, ev.clientY, scale * zoomAmount);
+      }, { passive: false });
+
+      // Controles botones
+      document.getElementById('zoomIn').addEventListener('click', () => {
+        // Zoom hacia el centro del stage
+        const rect = stage.getBoundingClientRect();
+        zoomAt(rect.left + rect.width/2, rect.top + rect.height/2, scale * 1.2);
+      });
+      document.getElementById('zoomOut').addEventListener('click', () => {
+        const rect = stage.getBoundingClientRect();
+        zoomAt(rect.left + rect.width/2, rect.top + rect.height/2, scale / 1.2);
+      });
+      document.getElementById('reset').addEventListener('click', () => {
+        fitToStage();
+      });
+
+      // Pointer events para pan (y pinch via múltiples punteros)
+      stage.addEventListener('pointerdown', (ev) => {
+        stage.setPointerCapture(ev.pointerId);
+        pointers.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+
+        if(pointers.size === 1){
+          // empezar pan
+          isPanning = true;
+          startX = ev.clientX;
+          startY = ev.clientY;
+          startPanX = panX;
+          startPanY = panY;
+        } else if(pointers.size === 2){
+          // comenzar pinch
+          const it = pointers.values();
+          const p1 = it.next().value;
+          const p2 = it.next().value;
+          lastDistance = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+        }
+      });
+
+      stage.addEventListener('pointermove', (ev) => {
+        if(!pointers.has(ev.pointerId)) return;
+        pointers.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+
+        if(pointers.size === 1 && isPanning){
+          // arrastre simple
+          const dx = ev.clientX - startX;
+          const dy = ev.clientY - startY;
+          panX = startPanX + dx;
+          panY = startPanY + dy;
+          clampPan();
+          applyTransform();
+        } else if(pointers.size === 2){
+          // pinch to zoom + optional pan
+          const it = pointers.values();
+          const p1 = it.next().value;
+          const p2 = it.next().value;
+          const curDistance = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+          if(lastDistance && curDistance !== lastDistance){
+            // Zoom respecto al punto medio entre los dos pointers
+            const midX = (p1.x + p2.x)/2;
+            const midY = (p1.y + p2.y)/2;
+            const factor = curDistance / lastDistance;
+            zoomAt(midX, midY, scale * factor);
+          }
+          lastDistance = curDistance;
+        }
+      });
+
+      function endPointer(ev){
+        stage.releasePointerCapture(ev.pointerId);
+        pointers.delete(ev.pointerId);
+        if(pointers.size === 0){
+          isPanning = false;
+          lastDistance = null;
+        }
+      }
+      stage.addEventListener('pointerup', endPointer);
+      stage.addEventListener('pointercancel', endPointer);
+      stage.addEventListener('pointerout', endPointer);
+      stage.addEventListener('pointerleave', endPointer);
+
+      // Redimensionar ventana: volver a ajustar si es necesario
+      window.addEventListener('resize', () => {
+        // Opcional: conservar zoom y pan, pero ajustar límites
+        clampPan();
+        applyTransform();
+      });
+
+      // Si la imagen aún no se cargó, al cargar aplicar fit
+      if(poster.complete){
+        fitToStage();
+      } else {
+        poster.addEventListener('load', fitToStage);
+      }
+
+      // Prevención de gesto doble-tap en móviles que hace zoom de página
+      let lastTouchEnd = 0;
+      document.addEventListener('touchend', function(ev){
+        const now = Date.now();
+        if(now - lastTouchEnd <= 300){
+          ev.preventDefault();
+        }
+        lastTouchEnd = now;
+      }, false);
+
+      // Accesibilidad: teclado para zoom y pan
+      document.addEventListener('keydown', (ev) => {
+        const step = 50;
+        if(ev.key === '+'){
+          zoomAt(window.innerWidth/2, window.innerHeight/2, scale * 1.2);
+        } else if(ev.key === '-'){
+          zoomAt(window.innerWidth/2, window.innerHeight/2, scale / 1.2);
+        } else if(ev.key === 'ArrowUp'){
+          panY += step; clampPan(); applyTransform();
+        } else if(ev.key === 'ArrowDown'){
+          panY -= step; clampPan(); applyTransform();
+        } else if(ev.key === 'ArrowLeft'){
+          panX += step; clampPan(); applyTransform();
+        } else if(ev.key === 'ArrowRight'){
+          panX -= step; clampPan(); applyTransform();
+        }
+      });
+
+    })();
   </script>
 </body>
 </html>
